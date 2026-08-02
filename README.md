@@ -1,16 +1,17 @@
 # Multi-Agent Architecture Review
 
 This command-line application turns a blueprint into a Mermaid software
-architecture, sends the exact artifact to four independent reviewers in
-parallel, and returns blocking feedback to the same architect session until all
-reviewers approve or the review-round limit is reached.
+architecture, sends the exact artifact to the configured independent reviewers
+in parallel, and returns blocking feedback to the same architect session until
+all reviewers approve or the review-round limit is reached.
 
-The reviewers cover:
+The default reviewers cover:
 
 - QA and operability
 - Security and privacy
 - Developer experience
 - User experience
+- Performance and scalability
 
 Consensus is determined by Python code, not by an agent. Every reviewer must
 approve the same artifact SHA-256 with no blocking findings.
@@ -20,8 +21,9 @@ approve the same artifact SHA-256 with no blocking findings.
 1. The architecture agent creates version 1 from the blueprint.
 2. Its conversation history is stored in a file-backed Agents SDK
    `SQLiteSession`.
-3. QA, Security, DX, and UX agents review the same immutable artifact in
-   parallel. Reviewers do not share sessions or see each other's answers.
+3. Every agent configured in `reviewers.json` reviews the same immutable
+   artifact in parallel. Reviewers do not share sessions or see each other's
+   answers.
 4. If any reviewer requests changes, all blocking findings return to the
    architecture agent in its original session.
 5. A complete new version is created and all reviewers run again.
@@ -41,8 +43,8 @@ to the corresponding Agents SDK `Agent`.
 - An OpenAI project with access to the configured models
 
 This uses API billing. It does not use a ChatGPT subscription allowance. A run
-uses at least one architect call plus four parallel reviewer calls. Each
-revision adds another architect call and another four reviews.
+uses at least one architect call plus one call per configured reviewer. Each
+revision adds another architect call and another call per reviewer.
 
 The default model is `gpt-5.6`. Set `OPENAI_MODEL` or
 `OPENAI_REVIEW_MODEL` if your project uses a different available model.
@@ -80,10 +82,25 @@ Verify the local setup without making an API call:
 python multi_agent_review.py --check
 ```
 
+List every available reviewer:
+
+```powershell
+python .\multi_agent_review.py --list-reviewers
+```
+
 ## Run the example
 
 ```powershell
 python multi_agent_review.py examples\blueprint.md
+```
+
+By default, a new run uses every reviewer in `reviewers.json`. Select a subset
+by passing their comma-separated names:
+
+```powershell
+python .\multi_agent_review.py `
+  --reviewers qa,security,performance `
+  examples\blueprint.md
 ```
 
 Limit the workflow to two review rounds:
@@ -144,7 +161,9 @@ runs/<run-id>/
 
 - `architecture-vN.mmd` is the Mermaid diagram.
 - `architecture-vN.json` contains the diagram and design narrative.
-- `reviews-vN.json` contains the four structured reviews.
+- `reviews-vN.json` contains the structured reviews.
+- `reviewers.json` is the immutable reviewer configuration snapshot for the
+  run.
 - `architect-session.db` preserves the architect conversation across revisions
   and process restarts.
 - `decision.json` records approval or human-review escalation.
@@ -170,6 +189,31 @@ Changes apply to new process invocations. Existing run artifacts are never
 silently rewritten, but a resumed run will use the current skill text for its
 next model call. For strict audit reproducibility, copy the skills into each run
 or record their hashes before production use.
+
+## Add a reviewer
+
+Reviewer types are configured in the project-level `reviewers.json`. Each entry
+has a stable lowercase `name`, a display `label`, and the name of a skill
+directory:
+
+```json
+{
+  "name": "compliance",
+  "label": "Compliance",
+  "skill": "review-architecture-compliance"
+}
+```
+
+To add this reviewer:
+
+1. Create `skills/review-architecture-compliance/SKILL.md`.
+2. Add the object above to the array in `reviewers.json`.
+3. Run `python multi_agent_review.py --check`.
+
+New runs use the current project configuration. At creation time, the
+configuration is copied into the run directory and hashed in `state.json`.
+Resumed runs use that saved snapshot, so adding or removing project reviewers
+does not silently change an existing run's consensus requirements.
 
 ## Operational notes
 

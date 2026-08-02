@@ -1,0 +1,27 @@
+[
+  {
+    "name": "qa",
+    "label": "QA",
+    "skill": "review-architecture-qa"
+  },
+  {
+    "name": "security",
+    "label": "Security",
+    "skill": "review-architecture-security"
+  },
+  {
+    "name": "dx",
+    "label": "DX",
+    "skill": "review-architecture-dx"
+  },
+  {
+    "name": "ux",
+    "label": "UX",
+    "skill": "review-architecture-ux"
+  },
+  {
+    "name": "performance",
+    "label": "Performance",
+    "skill": "review-architecture-performance"
+  }
+]

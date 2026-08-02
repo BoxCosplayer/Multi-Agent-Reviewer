@@ -19,10 +19,11 @@ from pydantic import BaseModel, Field, model_validator
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_RUNS_DIR = PROJECT_ROOT / "runs"
+DEFAULT_REVIEWERS_PATH = PROJECT_ROOT / "reviewers.json"
 DEFAULT_MAX_REVIEW_ROUNDS = 5
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
+REVIEWER_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{0,39}$")
 
-ReviewerName = Literal["qa", "security", "dx", "ux"]
 Verdict = Literal["approve", "changes_required"]
 WorkflowStatus = Literal[
     "created",
@@ -35,6 +36,25 @@ WorkflowStatus = Literal[
 
 class WorkflowError(RuntimeError):
     """Raised when persisted workflow state is invalid or unsafe to continue."""
+
+
+class ReviewerConfig(BaseModel):
+    name: str
+    label: str
+    skill: str
+
+    @model_validator(mode="after")
+    def valid_name(self) -> "ReviewerConfig":
+        if not REVIEWER_NAME_PATTERN.fullmatch(self.name):
+            raise ValueError(
+                "Reviewer names must start with a lowercase letter and contain "
+                "only lowercase letters, digits, underscores, or hyphens."
+            )
+        if not self.label.strip():
+            raise ValueError("Reviewer labels cannot be empty.")
+        if not self.skill.strip():
+            raise ValueError("Reviewer skill names cannot be empty.")
+        return self
 
 
 class ArchitectureContent(BaseModel):
@@ -65,7 +85,7 @@ class BlockingFinding(BaseModel):
 
 
 class Review(BaseModel):
-    reviewer: ReviewerName
+    reviewer: str
     artifact_sha256: str
     verdict: Verdict
     blocking_findings: list[BlockingFinding] = Field(default_factory=list)
@@ -92,16 +112,9 @@ class PersistedState(BaseModel):
     architect_session_id: str
     architect_model: str
     reviewer_model: str
+    reviewers_sha256: str = ""
     created_at: str
     updated_at: str
-
-
-REVIEWER_SKILLS: dict[ReviewerName, str] = {
-    "qa": "review-architecture-qa",
-    "security": "review-architecture-security",
-    "dx": "review-architecture-dx",
-    "ux": "review-architecture-ux",
-}
 
 
 def utc_now() -> str:
@@ -140,6 +153,87 @@ def load_skill(skill_name: str) -> str:
     if not skill_path.is_file():
         raise WorkflowError(f"Required skill is missing: {skill_path}")
     return skill_path.read_text(encoding="utf-8")
+
+
+def load_reviewer_configs(path: Path) -> list[ReviewerConfig]:
+    if not path.is_file():
+        raise WorkflowError(f"Reviewer configuration is missing: {path}")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, list):
+            raise ValueError("the top-level JSON value must be an array")
+        reviewers = [ReviewerConfig.model_validate(item) for item in payload]
+    except (json.JSONDecodeError, ValueError) as error:
+        raise WorkflowError(
+            f"Reviewer configuration is invalid ({path}): {error}"
+        ) from error
+
+    if not reviewers:
+        raise WorkflowError("At least one reviewer must be configured.")
+    names = [reviewer.name for reviewer in reviewers]
+    if len(names) != len(set(names)):
+        raise WorkflowError("Reviewer configuration contains duplicate names.")
+    return reviewers
+
+
+def select_reviewer_configs(
+    selection: str | None,
+    available_reviewers: list[ReviewerConfig],
+) -> list[ReviewerConfig]:
+    if selection is None:
+        return available_reviewers
+
+    requested_names = [name.strip() for name in selection.split(",")]
+    if not requested_names or any(not name for name in requested_names):
+        raise WorkflowError(
+            "--reviewers must be a comma-separated list of reviewer names."
+        )
+    if len(requested_names) != len(set(requested_names)):
+        raise WorkflowError("--reviewers contains duplicate reviewer names.")
+
+    reviewers_by_name = {
+        reviewer.name: reviewer for reviewer in available_reviewers
+    }
+    unknown_names = [
+        name for name in requested_names if name not in reviewers_by_name
+    ]
+    if unknown_names:
+        available_names = ", ".join(reviewers_by_name)
+        raise WorkflowError(
+            "Unknown reviewer(s): "
+            f"{', '.join(unknown_names)}. Available reviewers: "
+            f"{available_names}."
+        )
+    return [reviewers_by_name[name] for name in requested_names]
+
+
+def print_available_reviewers(reviewers: list[ReviewerConfig]) -> None:
+    print("Available reviewers:")
+    name_width = max(len(reviewer.name) for reviewer in reviewers)
+    label_width = max(len(reviewer.label) for reviewer in reviewers)
+    for reviewer in reviewers:
+        print(
+            f"  {reviewer.name:<{name_width}}  "
+            f"{reviewer.label:<{label_width}}  "
+            f"[{reviewer.skill}]"
+        )
+
+
+def reviewer_config_hash(reviewers: list[ReviewerConfig]) -> str:
+    payload = json.dumps(
+        [reviewer.model_dump(mode="json") for reviewer in reviewers],
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return sha256_text(payload)
+
+
+def save_reviewer_configs(path: Path, reviewers: list[ReviewerConfig]) -> None:
+    write_json_atomic(
+        path,
+        [reviewer.model_dump(mode="json") for reviewer in reviewers],
+    )
 
 
 def make_artifact(
@@ -200,7 +294,7 @@ def load_state(run_dir: Path) -> PersistedState:
 
 def validate_review(
     review: Review,
-    expected_reviewer: ReviewerName,
+    expected_reviewer: str,
     expected_hash: str,
 ) -> None:
     if review.reviewer != expected_reviewer:
@@ -214,10 +308,11 @@ def validate_review(
 def consensus_reached(
     reviews: list[Review],
     expected_hash: str,
+    expected_reviewers: set[str],
 ) -> bool:
     return (
-        {review.reviewer for review in reviews}
-        == {"qa", "security", "dx", "ux"}
+        {review.reviewer for review in reviews} == expected_reviewers
+        and len(reviews) == len(expected_reviewers)
         and all(review.artifact_sha256 == expected_hash for review in reviews)
         and all(review.verdict == "approve" for review in reviews)
         and all(not review.blocking_findings for review in reviews)
@@ -225,9 +320,17 @@ def consensus_reached(
 
 
 class WorkflowEngine:
-    def __init__(self, architect_model: str, reviewer_model: str) -> None:
+    def __init__(
+        self,
+        architect_model: str,
+        reviewer_model: str,
+        reviewer_configs: list[ReviewerConfig],
+    ) -> None:
         self.architect_model = architect_model
         self.reviewer_model = reviewer_model
+        self.reviewer_configs = {
+            reviewer.name: reviewer for reviewer in reviewer_configs
+        }
         self.architect = Agent(
             name="Architecture Owner",
             model=architect_model,
@@ -246,23 +349,21 @@ Application-specific requirements:
             output_type=ArchitectureContent,
         )
         self.reviewers = {
-            reviewer_name: self._make_reviewer(
-                reviewer_name,
-                REVIEWER_SKILLS[reviewer_name],
+            reviewer.name: self._make_reviewer(
+                reviewer,
             )
-            for reviewer_name in REVIEWER_SKILLS
+            for reviewer in reviewer_configs
         }
 
     def _make_reviewer(
         self,
-        reviewer_name: ReviewerName,
-        skill_name: str,
+        reviewer: ReviewerConfig,
     ) -> Agent:
         return Agent(
-            name=f"{reviewer_name.upper()} Architecture Reviewer",
+            name=f"{reviewer.label} Architecture Reviewer",
             model=self.reviewer_model,
             instructions=f"""
-{load_skill(skill_name)}
+{load_skill(reviewer.skill)}
 
 Application-specific requirements:
 - Act independently and assess only the supplied blueprint and artifact.
@@ -297,7 +398,7 @@ Create the initial software architecture for the following blueprint.
 
     async def review_artifact(
         self,
-        reviewer_name: ReviewerName,
+        reviewer_name: str,
         blueprint: str,
         artifact: ArchitectureArtifact,
     ) -> Review:
@@ -347,9 +448,12 @@ Review the same artifact again and correct the metadata inconsistency.
         blueprint: str,
         artifact: ArchitectureArtifact,
     ) -> list[Review]:
+        reviewer_labels = ", ".join(
+            reviewer.label for reviewer in self.reviewer_configs.values()
+        )
         print(
             f"Reviewing architecture v{artifact.version} "
-            "with QA, Security, DX, and UX agents..."
+            f"with {reviewer_labels} agents..."
         )
         return list(
             await asyncio.gather(
@@ -359,7 +463,7 @@ Review the same artifact again and correct the metadata inconsistency.
                         blueprint,
                         artifact,
                     )
-                    for reviewer_name in REVIEWER_SKILLS
+                    for reviewer_name in self.reviewer_configs
                 ]
             )
         )
@@ -419,8 +523,9 @@ def create_run(
     max_review_rounds: int,
     architect_model: str,
     reviewer_model: str,
+    reviewer_configs: list[ReviewerConfig],
     requested_run_id: str | None,
-) -> tuple[Path, str, PersistedState]:
+) -> tuple[Path, str, PersistedState, list[ReviewerConfig]]:
     blueprint_path = blueprint_path.resolve()
     if not blueprint_path.is_file():
         raise WorkflowError(f"Blueprint file does not exist: {blueprint_path}")
@@ -439,6 +544,7 @@ def create_run(
 
     run_dir.mkdir(parents=True)
     (run_dir / "blueprint.md").write_text(blueprint + "\n", encoding="utf-8")
+    save_reviewer_configs(run_dir / "reviewers.json", reviewer_configs)
 
     now = utc_now()
     state = PersistedState(
@@ -447,19 +553,21 @@ def create_run(
         architect_session_id=f"architect:{run_id}",
         architect_model=architect_model,
         reviewer_model=reviewer_model,
+        reviewers_sha256=reviewer_config_hash(reviewer_configs),
         max_review_rounds=max_review_rounds,
         created_at=now,
         updated_at=now,
     )
     save_state(run_dir, state)
-    return run_dir, blueprint, state
+    return run_dir, blueprint, state, reviewer_configs
 
 
 def resume_run(
     run_id: str,
     runs_dir: Path,
     max_review_rounds: int | None,
-) -> tuple[Path, str, PersistedState]:
+    default_reviewer_configs: list[ReviewerConfig],
+) -> tuple[Path, str, PersistedState, list[ReviewerConfig]]:
     validate_run_id(run_id)
     run_dir = runs_dir / run_id
     state = load_state(run_dir)
@@ -473,6 +581,28 @@ def resume_run(
             "The saved blueprint has changed. Start a new run instead of "
             "resuming against different input."
         )
+
+    reviewers_path = run_dir / "reviewers.json"
+    if reviewers_path.is_file():
+        reviewer_configs = load_reviewer_configs(reviewers_path)
+    else:
+        # Upgrade runs created before reviewer configuration was persisted.
+        reviewer_configs = default_reviewer_configs
+        save_reviewer_configs(reviewers_path, reviewer_configs)
+
+    actual_reviewers_hash = reviewer_config_hash(reviewer_configs)
+    if (
+        state.reviewers_sha256
+        and actual_reviewers_hash != state.reviewers_sha256
+    ):
+        raise WorkflowError(
+            "The saved reviewer configuration has changed. Restore the run's "
+            "reviewers.json or start a new run."
+        )
+    if not state.reviewers_sha256:
+        state.reviewers_sha256 = actual_reviewers_hash
+        save_state(run_dir, state)
+
     if max_review_rounds is not None:
         state.max_review_rounds = max_review_rounds
         if (
@@ -482,7 +612,7 @@ def resume_run(
             state.status = "awaiting_review"
         save_state(run_dir, state)
 
-    return run_dir, blueprint, state
+    return run_dir, blueprint, state, reviewer_configs
 
 
 async def execute_workflow(
@@ -555,7 +685,11 @@ async def execute_workflow(
         )
         state.completed_review_rounds += 1
 
-        if consensus_reached(reviews, artifact.sha256):
+        if consensus_reached(
+            reviews,
+            artifact.sha256,
+            set(engine.reviewer_configs),
+        ):
             state.status = "approved"
             save_state(run_dir, state)
             write_json_atomic(
@@ -613,17 +747,26 @@ async def execute_workflow(
 
 
 def run_check() -> int:
-    required_skills = ["design-architecture", *REVIEWER_SKILLS.values()]
+    reviewer_configs = load_reviewer_configs(DEFAULT_REVIEWERS_PATH)
+    required_skills = [
+        "design-architecture",
+        *[reviewer.skill for reviewer in reviewer_configs],
+    ]
     for skill_name in required_skills:
         load_skill(skill_name)
 
     print(f"Project root: {PROJECT_ROOT}")
+    print(
+        "Reviewers: "
+        + ", ".join(reviewer.label for reviewer in reviewer_configs)
+    )
     print("Skills: OK")
     print("Agents SDK import: OK")
     print("Pydantic import: OK")
     WorkflowEngine(
         os.getenv("OPENAI_MODEL", "gpt-5.6"),
         os.getenv("OPENAI_REVIEW_MODEL", "gpt-5.6"),
+        reviewer_configs,
     )
     print("Agent definitions and structured outputs: OK")
     if os.getenv("OPENAI_API_KEY"):
@@ -645,8 +788,8 @@ def positive_integer(value: str) -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Create an architecture and iterate through parallel QA, Security, "
-            "DX, and UX reviews until all reviewers approve."
+            "Create an architecture and iterate through parallel configured "
+            "reviewers until all selected reviewers approve."
         )
     )
     parser.add_argument(
@@ -684,11 +827,46 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Validate local prerequisites without calling the API.",
     )
+    parser.add_argument(
+        "--list-reviewers",
+        action="store_true",
+        help="List all reviewers available in reviewers.json and exit.",
+    )
+    parser.add_argument(
+        "--reviewers",
+        metavar="NAMES",
+        help=(
+            "Comma-separated reviewers for a new run "
+            "(default: all configured reviewers)."
+        ),
+    )
     return parser.parse_args()
 
 
 async def async_main(args: argparse.Namespace) -> int:
+    default_reviewer_configs = load_reviewer_configs(DEFAULT_REVIEWERS_PATH)
+
+    if args.list_reviewers:
+        if any(
+            (
+                args.blueprint,
+                args.resume,
+                args.run_id,
+                args.max_rounds,
+                args.reviewers,
+                args.check,
+            )
+        ):
+            raise WorkflowError(
+                "--list-reviewers cannot be combined with run options or "
+                "--check."
+            )
+        print_available_reviewers(default_reviewer_configs)
+        return 0
+
     if args.check:
+        if args.reviewers:
+            raise WorkflowError("--reviewers cannot be combined with --check.")
         return run_check()
 
     if bool(args.blueprint) == bool(args.resume):
@@ -697,6 +875,16 @@ async def async_main(args: argparse.Namespace) -> int:
         )
     if args.resume and args.run_id:
         raise WorkflowError("--run-id cannot be combined with --resume.")
+    if args.resume and args.reviewers:
+        raise WorkflowError(
+            "--reviewers cannot be combined with --resume; resumed runs use "
+            "their saved reviewer selection."
+        )
+
+    selected_reviewer_configs = select_reviewer_configs(
+        args.reviewers,
+        default_reviewer_configs,
+    )
     if not os.getenv("OPENAI_API_KEY"):
         raise WorkflowError(
             "OPENAI_API_KEY is not configured. Copy .env.example to .env "
@@ -707,10 +895,11 @@ async def async_main(args: argparse.Namespace) -> int:
     runs_dir.mkdir(parents=True, exist_ok=True)
 
     if args.resume:
-        run_dir, blueprint, state = resume_run(
+        run_dir, blueprint, state, reviewer_configs = resume_run(
             args.resume,
             runs_dir,
             args.max_rounds,
+            default_reviewer_configs,
         )
         architect_model = state.architect_model
         reviewer_model = state.reviewer_model
@@ -720,20 +909,29 @@ async def async_main(args: argparse.Namespace) -> int:
             "OPENAI_REVIEW_MODEL",
             architect_model,
         )
-        run_dir, blueprint, state = create_run(
+        run_dir, blueprint, state, reviewer_configs = create_run(
             args.blueprint,
             runs_dir,
             args.max_rounds or DEFAULT_MAX_REVIEW_ROUNDS,
             architect_model,
             reviewer_model,
+            selected_reviewer_configs,
             args.run_id,
         )
 
     print(f"Run ID: {state.run_id}")
     print(f"Architect model: {architect_model}")
     print(f"Reviewer model: {reviewer_model}")
+    print(
+        "Reviewers: "
+        + ", ".join(reviewer.name for reviewer in reviewer_configs)
+    )
     return await execute_workflow(
-        WorkflowEngine(architect_model, reviewer_model),
+        WorkflowEngine(
+            architect_model,
+            reviewer_model,
+            reviewer_configs,
+        ),
         run_dir,
         blueprint,
         state,
