@@ -1,0 +1,4 @@
+interface:
+  display_name: "Architecture UX Reviewer"
+  short_description: "Review user journeys and experience risks"
+  default_prompt: "Use $review-architecture-ux to assess user journeys and experience risks."

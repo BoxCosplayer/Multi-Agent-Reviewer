@@ -1,0 +1,4 @@
+interface:
+  display_name: "Architecture Security Reviewer"
+  short_description: "Review architecture security and trust boundaries"
+  default_prompt: "Use $review-architecture-security to assess trust boundaries and security risks."

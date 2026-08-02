@@ -1,0 +1,4 @@
+interface:
+  display_name: "Architecture Designer"
+  short_description: "Design clear, reviewable software architectures"
+  default_prompt: "Use $design-architecture to turn this blueprint into a reviewable Mermaid architecture."

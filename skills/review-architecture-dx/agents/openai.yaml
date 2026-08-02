@@ -1,0 +1,4 @@
+interface:
+  display_name: "Architecture DX Reviewer"
+  short_description: "Review developer experience and operability"
+  default_prompt: "Use $review-architecture-dx to assess integration and developer experience."

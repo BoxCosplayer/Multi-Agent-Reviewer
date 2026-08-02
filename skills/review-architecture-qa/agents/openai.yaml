@@ -1,0 +1,4 @@
+interface:
+  display_name: "Architecture QA Reviewer"
+  short_description: "Review architecture quality and operability"
+  default_prompt: "Use $review-architecture-qa to identify blocking quality and operability issues."
