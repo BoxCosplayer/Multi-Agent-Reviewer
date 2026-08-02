@@ -2,26 +2,41 @@
   {
     "name": "qa",
     "label": "QA",
-    "skill": "review-architecture-qa"
+    "skills": [
+      "skills/review-core/SKILL.md",
+      "skills/review-quality/SKILL.md"
+    ]
   },
   {
     "name": "security",
     "label": "Security",
-    "skill": "review-architecture-security"
+    "skills": [
+      "skills/review-core/SKILL.md",
+      "skills/review-security/SKILL.md"
+    ]
   },
   {
     "name": "dx",
     "label": "DX",
-    "skill": "review-architecture-dx"
+    "skills": [
+      "skills/review-core/SKILL.md",
+      "skills/review-developer-experience/SKILL.md"
+    ]
   },
   {
     "name": "ux",
     "label": "UX",
-    "skill": "review-architecture-ux"
+    "skills": [
+      "skills/review-core/SKILL.md",
+      "skills/review-usability/SKILL.md"
+    ]
   },
   {
     "name": "performance",
     "label": "Performance",
-    "skill": "review-architecture-performance"
+    "skills": [
+      "skills/review-core/SKILL.md",
+      "skills/review-performance/SKILL.md"
+    ]
   }
 ]

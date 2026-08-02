@@ -1,0 +1,38 @@
+{
+  "name": "architecture",
+  "label": "Software Architecture",
+  "designer": "architecture",
+  "reviewers": [
+    "qa",
+    "security",
+    "dx",
+    "ux",
+    "performance"
+  ],
+  "designer_skills": [
+    "skills/design-architecture/SKILL.md"
+  ],
+  "reviewer_skills": {
+    "qa": [
+      "skills/review-architecture-qa/SKILL.md"
+    ],
+    "security": [
+      "skills/review-architecture-security/SKILL.md"
+    ],
+    "dx": [
+      "skills/review-architecture-dx/SKILL.md"
+    ],
+    "ux": [
+      "skills/review-architecture-ux/SKILL.md"
+    ],
+    "performance": [
+      "skills/review-architecture-performance/SKILL.md"
+    ]
+  },
+  "accepted_blueprint_types": [
+    "text/plain",
+    "text/markdown",
+    "application/pdf"
+  ],
+  "pdf_detail": "auto"
+}

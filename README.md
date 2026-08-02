@@ -1,135 +1,101 @@
-# Multi-Agent Architecture Review
+# Multi-Agent Design Review
 
-This command-line application turns a blueprint into a Mermaid software
-architecture, sends the exact artifact to the configured independent reviewers
-in parallel, and returns blocking feedback to the same architect session until
-all reviewers approve or the review-round limit is reached.
+This command-line application turns a text or PDF source document into a
+reviewable Markdown artifact, sends the exact artifact and source to independent
+reviewers in parallel, and returns blocking feedback to the same designer
+session until every selected reviewer approves or the review-round limit is
+reached.
 
-The default reviewers cover:
+Designers, reviewers, profiles, and skills are configuration-driven. The
+included `architecture` profile preserves the original software-architecture
+workflow, but new artifact types do not require Python changes.
 
-- QA and operability
-- Security and privacy
-- Developer experience
-- User experience
-- Performance and scalability
+Consensus is determined by Python code. Every reviewer must approve the same
+artifact SHA-256 with no blocking findings.
 
-Consensus is determined by Python code, not by an agent. Every reviewer must
-approve the same artifact SHA-256 with no blocking findings.
+## Setup
 
-## How it works
-
-1. The architecture agent creates version 1 from the blueprint.
-2. Its conversation history is stored in a file-backed Agents SDK
-   `SQLiteSession`.
-3. Every agent configured in `reviewers.json` reviews the same immutable
-   artifact in parallel. Reviewers do not share sessions or see each other's
-   answers.
-4. If any reviewer requests changes, all blocking findings return to the
-   architecture agent in its original session.
-5. A complete new version is created and all reviewers run again.
-6. The workflow ends when all reviewers approve or the maximum number of
-   review rounds is reached.
-
-The application loads each local `skills/*/SKILL.md` file into the relevant
-agent's instructions. This provides reusable skill behavior without requiring
-Codex skill discovery. If a skill needs executable tools later, add those tools
-to the corresponding Agents SDK `Agent`.
-
-## Prerequisites
-
-- Python 3.10 or newer
-- An OpenAI Platform API key
-- Network access to the OpenAI API
-- An OpenAI project with access to the configured models
-
-This uses API billing. It does not use a ChatGPT subscription allowance. A run
-uses at least one architect call plus one call per configured reviewer. Each
-revision adds another architect call and another call per reviewer.
-
-The default model is `gpt-5.6`. Set `OPENAI_MODEL` or
-`OPENAI_REVIEW_MODEL` if your project uses a different available model.
-
-## Windows setup
-
-Open PowerShell:
+Requires Python 3.10 or newer, network access, and an OpenAI Platform API key.
+This uses API billing rather than a ChatGPT subscription allowance.
 
 ```powershell
-Set-Location -LiteralPath '[Path]'
-
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
-
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-
 Copy-Item .env.example .env
-notepad .env
 ```
 
-Add the API key to `.env`:
+Set `OPENAI_API_KEY` in `.env`. `OPENAI_MODEL` controls designers and
+`OPENAI_REVIEW_MODEL` optionally selects a different reviewer model.
 
-```dotenv
-OPENAI_API_KEY=your-api-key
-OPENAI_MODEL=gpt-5.6
-OPENAI_REVIEW_MODEL=gpt-5.6
-```
-
-The `.env` file and generated runs are excluded by `.gitignore`.
-
-Verify the local setup without making an API call:
+Validate every registry, profile, skill, and agent definition without making an
+API call:
 
 ```powershell
 python multi_agent_review.py --check
 ```
 
-List every available reviewer:
+List available agents:
 
 ```powershell
-python .\multi_agent_review.py --list-reviewers
+python multi_agent_review.py --list-designers
+python multi_agent_review.py --list-reviewers
 ```
 
-## Run the example
+## Run a design review
+
+New runs require an explicit designer. The designer name also selects the
+same-named profile:
 
 ```powershell
-python multi_agent_review.py examples\blueprint.md
-```
-
-By default, a new run uses every reviewer in `reviewers.json`. Select a subset
-by passing their comma-separated names:
-
-```powershell
-python .\multi_agent_review.py `
-  --reviewers qa,security,performance `
+python multi_agent_review.py `
+  --designer architecture `
   examples\blueprint.md
 ```
 
-Limit the workflow to two review rounds:
+PDF sources use the same command:
 
 ```powershell
-python multi_agent_review.py examples\blueprint.md --max-rounds 2
+python multi_agent_review.py `
+  --designer architecture `
+  'C:\path\to\blueprint.pdf'
 ```
 
-Give a new run a stable ID:
+The original PDF is sent directly as a Responses API `input_file`; the API
+provides its extracted text and page images to vision-capable models. PDFs must
+be smaller than 50 MB. Diagram-heavy PDFs can consume substantially more input
+tokens than text because page images are included. See the
+[OpenAI file-input guide](https://developers.openai.com/api/docs/guides/file-inputs).
+
+Replace the profile's default reviewers with any registered set:
 
 ```powershell
-python multi_agent_review.py examples\blueprint.md --run-id support-assistant
+python multi_agent_review.py `
+  --designer architecture `
+  --reviewers security,performance `
+  examples\blueprint.md
 ```
 
-Run your own blueprint:
+Other useful options:
 
 ```powershell
-python multi_agent_review.py 'C:\path\to\blueprint.md'
+python multi_agent_review.py `
+  --designer architecture `
+  --run-id support-assistant `
+  --max-rounds 2 `
+  examples\blueprint.md
 ```
 
-## Resume an interrupted run
+## Resume a run
 
-The program prints the run ID when it starts. Resume it with:
+The program prints the run ID when it starts:
 
 ```powershell
 python multi_agent_review.py --resume 20260802T120000Z-a1b2c3d4
 ```
 
-If a run stopped because it reached its round limit, increase the limit:
+Increase the round limit when continuing a run that required human review:
 
 ```powershell
 python multi_agent_review.py `
@@ -137,9 +103,103 @@ python multi_agent_review.py `
   --max-rounds 8
 ```
 
-The saved blueprint is hashed. If it changes, the application refuses to resume
-the old run; start a new run so reviews cannot accidentally refer to mixed
-requirements.
+Do not pass `--designer` or `--reviewers` when resuming. A run freezes its
+profile, selected agents, ordered skill paths, and complete skill text. Editing
+project configuration affects new runs only. Runs created by the old
+architecture-only state format cannot be resumed; start a new profile-based
+run.
+
+## Configuration
+
+`designers.json` defines reusable designers and their base skills:
+
+```json
+[
+  {
+    "name": "architecture",
+    "label": "Architecture Designer",
+    "skills": [
+      "skills/design-core/SKILL.md"
+    ]
+  }
+]
+```
+
+`reviewers.json` defines reusable reviewer concerns:
+
+```json
+[
+  {
+    "name": "security",
+    "label": "Security",
+    "skills": [
+      "skills/review-core/SKILL.md",
+      "skills/review-security/SKILL.md"
+    ]
+  }
+]
+```
+
+Each designer has exactly one matching file under `profiles/`. The filename,
+profile `name`, and `designer` must match:
+
+```json
+{
+  "name": "architecture",
+  "label": "Software Architecture",
+  "designer": "architecture",
+  "reviewers": ["qa", "security", "dx", "ux", "performance"],
+  "designer_skills": [
+    "skills/design-architecture/SKILL.md"
+  ],
+  "reviewer_skills": {
+    "security": [
+      "skills/review-architecture-security/SKILL.md"
+    ]
+  },
+  "accepted_blueprint_types": [
+    "text/plain",
+    "text/markdown",
+    "application/pdf"
+  ],
+  "pdf_detail": "auto"
+}
+```
+
+Skill paths are ordered, relative paths under `skills/`, and must end in
+`SKILL.md`. Instructions compose in this order:
+
+1. Non-editable application invariants.
+2. Base skills from the designer or reviewer registry.
+3. Domain overlays from the selected profile.
+
+`pdf_detail` accepts `auto`, `low`, or `high`.
+
+## Add a designer and profile
+
+1. Create its generic and domain-specific `SKILL.md` files under `skills/`.
+2. Add the designer and its base skill paths to `designers.json`.
+3. Create `profiles/<designer-name>.json`.
+4. Select the profile's default reviewers and optional per-reviewer domain skill
+   overlays.
+5. Run `python multi_agent_review.py --check`.
+6. Start it with `--designer <designer-name>`.
+
+Every designer returns the same structured text contract: title, summary,
+Markdown body, assumptions, decisions, and change log. This makes new designers
+configuration-only while retaining deterministic revision and rendering.
+
+## Add a reviewer
+
+1. Create one or more generic reviewer skills under `skills/`.
+2. Add the reviewer and ordered base skill paths to `reviewers.json`.
+3. Add it to a profile's default `reviewers` list when desired.
+4. Optionally add domain-specific paths under the profile's
+   `reviewer_skills`.
+5. Run `python multi_agent_review.py --check`.
+
+A reviewer chosen with `--reviewers` but absent from the profile uses its
+registry skills without a domain overlay.
 
 ## Run output
 
@@ -147,91 +207,33 @@ Each execution is stored under `runs/<run-id>/`:
 
 ```text
 runs/<run-id>/
-├── blueprint.md
+├── source.md or source.pdf
+├── source.json
 ├── state.json
-├── architect-session.db
-├── architecture-v1.json
-├── architecture-v1.mmd
+├── designer-session.db
+├── config/
+│   ├── profile.json
+│   ├── designer.json
+│   ├── reviewers.json
+│   ├── skills.json
+│   └── manifest.json
+├── artifact-v1.json
+├── artifact-v1.md
 ├── reviews-v1.json
-├── architecture-v2.json
-├── architecture-v2.mmd
-├── reviews-v2.json
 └── decision.json
 ```
 
-- `architecture-vN.mmd` is the Mermaid diagram.
-- `architecture-vN.json` contains the diagram and design narrative.
-- `reviews-vN.json` contains the structured reviews.
-- `reviewers.json` is the immutable reviewer configuration snapshot for the
-  run.
-- `architect-session.db` preserves the architect conversation across revisions
-  and process restarts.
-- `decision.json` records approval or human-review escalation.
+The JSON artifact is the hashed structured source of truth.
+`artifact-vN.md` is its deterministic human-readable rendering. Reviewers are
+stateless and independently receive the same immutable artifact and source;
+the designer session persists across revisions and restarts.
 
-Paste an `.mmd` file into the
-[Mermaid Live Editor](https://mermaid.live/) or use a Mermaid-compatible editor
-to render it.
+## Tests
 
-## Customise the skills
-
-Edit:
-
-```text
-skills/
-├── design-architecture/SKILL.md
-├── review-architecture-qa/SKILL.md
-├── review-architecture-security/SKILL.md
-├── review-architecture-dx/SKILL.md
-└── review-architecture-ux/SKILL.md
+```powershell
+python -m unittest discover -s tests -v
+python multi_agent_review.py --check
 ```
 
-Changes apply to new process invocations. Existing run artifacts are never
-silently rewritten, but a resumed run will use the current skill text for its
-next model call. For strict audit reproducibility, copy the skills into each run
-or record their hashes before production use.
-
-## Add a reviewer
-
-Reviewer types are configured in the project-level `reviewers.json`. Each entry
-has a stable lowercase `name`, a display `label`, and the name of a skill
-directory:
-
-```json
-{
-  "name": "compliance",
-  "label": "Compliance",
-  "skill": "review-architecture-compliance"
-}
-```
-
-To add this reviewer:
-
-1. Create `skills/review-architecture-compliance/SKILL.md`.
-2. Add the object above to the array in `reviewers.json`.
-3. Run `python multi_agent_review.py --check`.
-
-New runs use the current project configuration. At creation time, the
-configuration is copied into the run directory and hashed in `state.json`.
-Resumed runs use that saved snapshot, so adding or removing project reviewers
-does not silently change an existing run's consensus requirements.
-
-## Operational notes
-
-- The architect session is persistent; reviewers are intentionally stateless.
-- Reviews are parallelized with `asyncio.gather`.
-- A model cannot declare consensus. The application checks reviewer identity,
-  artifact hash, verdict, and blocking findings.
-- If the process stops during a model call, resume the run. The current artifact
-  remains intact; the incomplete review round may be repeated.
-- SQLite is suitable for local use. Use a production session backend such as
-  SQLAlchemy/PostgreSQL before running this across multiple workers.
-- There is no cross-process lock. Do not resume the same run from two processes
-  at once.
-- A maximum-round limit prevents an unbounded agent loop.
-
-## Further reading
-
-- [OpenAI Agents SDK](https://openai.github.io/openai-agents-python/)
-- [Agents SDK sessions](https://openai.github.io/openai-agents-python/sessions/)
-- [Agents SDK tracing](https://openai.github.io/openai-agents-python/tracing/)
-- [OpenAI API keys](https://platform.openai.com/api-keys)
+The suite does not call the OpenAI API. A live run is the optional PDF smoke
+test when an API key and billing are available.

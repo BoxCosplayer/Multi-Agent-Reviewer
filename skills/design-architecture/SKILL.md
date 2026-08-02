@@ -20,7 +20,8 @@ evaluate without guessing.
 5. Cover deployment, observability, failure handling, recovery, and security
    controls in proportion to the blueprint.
 6. Prefer the simplest design that satisfies the stated constraints.
-7. Produce a complete Mermaid `flowchart`, without Markdown code fences.
+7. Put a complete Mermaid `flowchart` in a fenced `mermaid` block within
+   `body_markdown`.
 8. Record consequential trade-offs in decisions.
 
 ## Revision rules
@@ -28,7 +29,8 @@ evaluate without guessing.
 - Treat each blocking review finding as a requirement to resolve or rebut with
   concrete evidence.
 - Preserve unaffected sound decisions.
-- Update the whole artifact so the diagram and narrative remain consistent.
+- Update the whole Markdown artifact so the diagram and narrative remain
+  consistent.
 - Add a concise change-log entry for each material revision.
 - Never claim reviewer approval; only the orchestrator determines consensus.
 
