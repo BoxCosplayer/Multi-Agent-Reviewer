@@ -52,7 +52,7 @@ The default model is `gpt-5.6`. Set `OPENAI_MODEL` or
 Open PowerShell:
 
 ```powershell
-Set-Location -LiteralPath 'R:\..Docs\.Projects\Multi-Agent-Review'
+Set-Location -LiteralPath '[Path]'
 
 py -3.11 -m venv .venv
 .\.venv\Scripts\Activate.ps1
